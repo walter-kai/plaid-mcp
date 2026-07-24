@@ -1,0 +1,21 @@
+[project]
+name = "plaid-mcp"
+version = "0.1.0"
+description = "MCP server for Plaid transactions with Hosted Link companion"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "plaid-python>=30.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+plaid-mcp = "plaid_mcp.server:main"
+plaid-mcp-web = "plaid_mcp.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
