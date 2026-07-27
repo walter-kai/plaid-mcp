@@ -1,10 +1,69 @@
-"""FastMCP stdio server (local Claude Desktop / Cursor — no Google OAuth)."""
+"""Optional local stdio MCP for desktop testing. Production Claude MCP lives in spearfresh-ui."""
 
 from __future__ import annotations
 
-from plaid_mcp.tools import create_mcp
+from typing import Any
 
-mcp = create_mcp(auth=None)
+from fastmcp import FastMCP
+
+from plaid_mcp import services
+
+mcp = FastMCP(
+    name="plaid-transactions-local",
+    instructions=(
+        "LOCAL ONLY. Production Claude should use spearfresh-ui MCP. "
+        "Connect a bank via Hosted Link, then sync transactions. "
+        "Ask US vs Canada; use country='CA', 'US', or 'both'. "
+        "Flow: create_link_session → open hosted_link_url → list_items → transactions_sync."
+    ),
+)
+
+
+@mcp.tool
+def create_link_session(
+    country: str = "both",
+    label: str | None = None,
+    client_user_id: str | None = None,
+    countries: list[str] | None = None,
+) -> dict[str, Any]:
+    """Start a Plaid Hosted Link session for Transactions (local stdio helper)."""
+    return services.create_link_session(
+        country=country,
+        label=label,
+        client_user_id=client_user_id,
+        countries=countries,
+    )
+
+
+@mcp.tool
+def list_items() -> dict[str, Any]:
+    """List stored Plaid Items available for transaction sync."""
+    return services.list_items()
+
+
+@mcp.tool
+def accounts_get(
+    item_id: str | None = None,
+    access_token: str | None = None,
+) -> dict[str, Any]:
+    """Fetch accounts for a stored item_id or a raw access_token."""
+    return services.accounts_get(item_id=item_id, access_token=access_token)
+
+
+@mcp.tool
+def transactions_sync(
+    item_id: str | None = None,
+    access_token: str | None = None,
+    cursor: str | None = None,
+    count: int = 500,
+) -> dict[str, Any]:
+    """Sync transactions via /transactions/sync with server-side pagination."""
+    return services.transactions_sync(
+        item_id=item_id,
+        access_token=access_token,
+        cursor=cursor,
+        count=count,
+    )
 
 
 def main() -> None:

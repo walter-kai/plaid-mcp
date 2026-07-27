@@ -1,4 +1,4 @@
-"""Local JSON persistence for Plaid Items / access tokens."""
+"""Persistence for Plaid Items / access tokens (local JSON or GCS)."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from plaid_mcp.config import get_settings
 
 _lock = threading.Lock()
+_gcs_client = None
 
 
 def _now() -> str:
@@ -21,24 +23,74 @@ def _path() -> Path:
     return get_settings().items_path
 
 
-def _read() -> dict[str, Any]:
-    path = _path()
-    if not path.exists():
-        return {"items": {}}
-    with path.open("r", encoding="utf-8") as handle:
-        data = json.load(handle)
+def _parse_gcs_uri(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != "gs" or not parsed.netloc or not parsed.path:
+        raise ValueError(
+            f"PLAID_ITEMS_GCS_URI must look like gs://bucket/path.json; got {uri!r}"
+        )
+    bucket = parsed.netloc
+    blob = parsed.path.lstrip("/")
+    if not blob:
+        raise ValueError(f"PLAID_ITEMS_GCS_URI missing object path: {uri!r}")
+    return bucket, blob
+
+
+def _get_gcs_blob():
+    global _gcs_client
+    settings = get_settings()
+    if not settings.items_gcs_uri:
+        return None
+    if _gcs_client is None:
+        from google.cloud import storage  # lazy import
+
+        _gcs_client = storage.Client()
+    bucket_name, blob_name = _parse_gcs_uri(settings.items_gcs_uri)
+    return _gcs_client.bucket(bucket_name).blob(blob_name)
+
+
+def _empty() -> dict[str, Any]:
+    return {"items": {}, "pending_links": {}}
+
+
+def _normalize(data: dict[str, Any]) -> dict[str, Any]:
     if "items" not in data or not isinstance(data["items"], dict):
         data["items"] = {}
+    if "pending_links" not in data or not isinstance(data.get("pending_links"), dict):
+        data["pending_links"] = data.get("pending_links") or {}
+        if not isinstance(data["pending_links"], dict):
+            data["pending_links"] = {}
     return data
 
 
+def _read() -> dict[str, Any]:
+    blob = _get_gcs_blob()
+    if blob is not None:
+        if not blob.exists():
+            return _empty()
+        data = json.loads(blob.download_as_text(encoding="utf-8"))
+        return _normalize(data if isinstance(data, dict) else _empty())
+
+    path = _path()
+    if not path.exists():
+        return _empty()
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    return _normalize(data if isinstance(data, dict) else _empty())
+
+
 def _write(data: dict[str, Any]) -> None:
+    payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    blob = _get_gcs_blob()
+    if blob is not None:
+        blob.upload_from_string(payload, content_type="application/json")
+        return
+
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     with tmp.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+        handle.write(payload)
     tmp.replace(path)
 
 

@@ -1,4 +1,4 @@
-"""Plaid Hosted Link HTTP routes (mounted on the unified FastAPI app)."""
+"""Link / webhook HTTP routes (mounted into the unified ASGI app)."""
 
 from __future__ import annotations
 
@@ -49,25 +49,27 @@ def _page(title: str, body: str) -> HTMLResponse:
     return HTMLResponse(html)
 
 
-def register_link_routes(app: FastAPI) -> None:
-    @app.get("/health")
-    def health() -> dict[str, Any]:
-        settings = get_settings()
-        return {
-            "ok": True,
-            "env": settings.env,
-            "public_base_url": settings.public_base_url,
-            "redirect_uri": settings.redirect_uri,
-            "completion_uri": settings.completion_uri,
-            "webhook_uri": settings.webhook_uri,
-            "mcp_url": f"{settings.public_base_url}/mcp",
-            "google_oauth_configured": bool(
-                settings.google_oauth_client_id and settings.google_oauth_client_secret
-            ),
-        }
+def register_link_routes(app: FastAPI, *, include_health: bool = True) -> None:
+    """Attach Plaid Hosted Link + webhook routes to ``app``."""
+
+    if include_health:
+
+        @app.get("/health")
+        def health() -> dict[str, Any]:
+            settings = get_settings()
+            return {
+                "ok": True,
+                "env": settings.env,
+                "redirect_uri": settings.redirect_uri,
+                "completion_uri": settings.completion_uri,
+                "webhook_uri": settings.webhook_uri,
+                "items_backend": "gcs" if settings.items_gcs_uri else "local",
+                "api_auth": bool(settings.service_key),
+            }
 
     @app.get("/oauth-redirect")
     def oauth_redirect(request: Request) -> HTMLResponse:
+        """OAuth return page registered in the Plaid Dashboard."""
         received = str(request.url)
         return _page(
             "Plaid OAuth redirect",
@@ -82,13 +84,14 @@ def register_link_routes(app: FastAPI) -> None:
         return _page(
             "Bank connected",
             """
-            <p>Hosted Link finished. Return to Claude/Cursor and call <code>list_items</code>, then <code>transactions_sync</code>.</p>
-            <p>If nothing appears yet, wait a few seconds for the <code>SESSION_FINISHED</code> webhook.</p>
+            <p>Hosted Link finished. Return to your MCP client and call <code>list_items</code>, then <code>transactions_sync</code>.</p>
+            <p>If nothing appears yet, wait a few seconds for the <code>SESSION_FINISHED</code> webhook to exchange the public token.</p>
             """,
         )
 
     @app.post("/webhook")
     async def webhook(request: Request) -> JSONResponse:
+        """Receive Plaid webhooks; exchange public tokens from SESSION_FINISHED."""
         try:
             payload = await request.json()
         except Exception:

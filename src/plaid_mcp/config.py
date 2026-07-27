@@ -26,14 +26,12 @@ class Settings:
     completion_uri: str
     webhook_uri: str
     items_path: Path
+    items_gcs_uri: str | None
     web_host: str
     web_port: int
-    public_base_url: str
-    google_oauth_client_id: str
-    google_oauth_client_secret: str
-    jwt_signing_key: str
-    allowed_emails: frozenset[str]
-    items_gcs_uri: str
+    upstream_key: str | None
+    service_key: str | None
+    public_base_url: str | None
 
     @property
     def plaid_host(self) -> str:
@@ -57,8 +55,9 @@ def _require(name: str) -> str:
     return value
 
 
-def _optional(name: str, default: str = "") -> str:
-    return os.getenv(name, default).strip()
+def _optional(name: str) -> str | None:
+    value = os.getenv(name, "").strip()
+    return value or None
 
 
 @lru_cache(maxsize=1)
@@ -69,18 +68,11 @@ def get_settings() -> Settings:
     if not items_path.is_absolute():
         items_path = _ROOT / items_path
 
-    web_port = int(os.getenv("PLAID_WEB_PORT", "3000"))
-    public_base = _optional("PUBLIC_BASE_URL")
-    if not public_base:
-        # Local default: ngrok/public URL should override this in .env for Plaid.
-        public_base = f"http://127.0.0.1:{web_port}"
+    # Cloud Run sets PORT; prefer it when present.
+    port_raw = os.getenv("PORT") or os.getenv("PLAID_WEB_PORT", "3000")
 
-    allowed_raw = _optional("ALLOWED_EMAILS")
-    allowed = frozenset(
-        email.strip().lower()
-        for email in allowed_raw.split(",")
-        if email.strip()
-    )
+    # Prefer PLAID_SERVICE_KEY; accept legacy PLAID_MCP_UPSTREAM_KEY.
+    service_key = _optional("PLAID_SERVICE_KEY") or _optional("PLAID_MCP_UPSTREAM_KEY")
 
     return Settings(
         client_id=_require("PLAID_CLIENT_ID"),
@@ -90,12 +82,10 @@ def get_settings() -> Settings:
         completion_uri=_require("PLAID_COMPLETION_URI"),
         webhook_uri=_require("PLAID_WEBHOOK_URI"),
         items_path=items_path,
-        web_host=os.getenv("PLAID_WEB_HOST", "0.0.0.0").strip() or "0.0.0.0",
-        web_port=web_port,
-        public_base_url=public_base.rstrip("/"),
-        google_oauth_client_id=_optional("GOOGLE_OAUTH_CLIENT_ID"),
-        google_oauth_client_secret=_optional("GOOGLE_OAUTH_CLIENT_SECRET"),
-        jwt_signing_key=_optional("JWT_SIGNING_KEY"),
-        allowed_emails=allowed,
         items_gcs_uri=_optional("PLAID_ITEMS_GCS_URI"),
+        web_host=os.getenv("PLAID_WEB_HOST", "0.0.0.0").strip() or "0.0.0.0",
+        web_port=int(port_raw),
+        upstream_key=service_key,  # legacy alias
+        service_key=service_key,
+        public_base_url=_optional("PUBLIC_BASE_URL"),
     )
