@@ -19,7 +19,7 @@ Claude ──OAuth+MCP──► spearfresh-ui
                          ▼
                       Plaid API
 
-Browser / Plaid ──────► plaid-link (PUBLIC)
+Browser / Plaid ──────► spearfresh-link (PUBLIC)
                          /oauth-redirect  /link-complete  /webhook
                          │
                          └─ writes Items to shared GCS
@@ -27,7 +27,7 @@ Browser / Plaid ──────► plaid-link (PUBLIC)
 
 | Service | Mode | Auth | Purpose |
 |---|---|---|---|
-| `plaid-link` | `link` | Public | Hosted Link callbacks + webhook |
+| `spearfresh-link` | `link` | Public | Shared callbacks (Plaid now; Stripe etc. later) |
 | `plaid-api` | `api` | Cloud Run IAM (no unauthenticated) | REST for spearfresh |
 
 Shared GCS (`PLAID_ITEMS_GCS_URI`) so webhook (link) and readers (api) see the same Items.
@@ -91,37 +91,50 @@ Do **not** put the service key in `Authorization` when using IAM — that header
 ### `POST /api/v1/link/sessions`
 
 ```json
-{ "country": "both", "label": null, "client_user_id": null, "countries": null }
+{ "country": "both", "label": null, "client_user_id": "user@example.com", "countries": null, "require_client_user_id": true }
 ```
 
 `country`: `"US"` | `"CA"` | `"both"`. Returns `hosted_link_url`, `link_token`, …
 
-### `GET /api/v1/items`
+For Spearfresh dashboard Connectors, always pass the signed-in user email as `client_user_id` and set `require_client_user_id: true`.
 
-Lists Items (access tokens redacted to prefix only).
+### `GET /api/v1/items?client_user_id=user@example.com`
+
+Lists Items for that user only (access tokens redacted to prefix). Omit `client_user_id` only for trusted admin/debug callers — Spearfresh must always pass it.
+
+### `DELETE /api/v1/items/{item_id}?client_user_id=user@example.com`
+
+Calls Plaid `/item/remove`, deletes the Item from the encrypted store. Returns 403 if `client_user_id` does not own the item.
 
 ### `POST /api/v1/accounts/get`
 
 ```json
-{ "item_id": "..." }
+{ "item_id": "...", "client_user_id": "user@example.com" }
 ```
 
 ### `POST /api/v1/transactions/sync`
 
 ```json
-{ "item_id": "...", "cursor": null, "count": 500 }
+{ "item_id": "...", "cursor": null, "count": 500, "client_user_id": "user@example.com" }
 ```
 
 Server paginates; returns `added` / `modified` / `removed` / `next_cursor`.
 
-## Public link service (plaid-link)
+## Token storage (plaid-mcp only)
+
+- Item `access_token`s are stored **only** in plaid-mcp (`PLAID_ITEMS_PATH` locally or `PLAID_ITEMS_GCS_URI` in Cloud Run).
+- Values are **AES-256-GCM** encrypted (`enc:v1:iv:tag:ciphertext`) using `PLAID_TOKEN_ENCRYPTION_KEY` (required when `PLAID_ENV=production`).
+- Spearfresh must **not** store Plaid access tokens in Firestore user docs. Spearfresh may store non-secret `connectors.plaid` metadata (`connected`, `itemIds`, institutions).
+- `public_token` is not retained after exchange.
+
+## Public link service (spearfresh-link)
 
 Configure **on plaid-mcp deploy** (not spearfresh):
 
 ```text
-PLAID_REDIRECT_URI=https://plaid-link-….run.app/oauth-redirect
-PLAID_COMPLETION_URI=https://plaid-link-….run.app/link-complete
-PLAID_WEBHOOK_URI=https://plaid-link-….run.app/webhook
+PLAID_REDIRECT_URI=https://spearfresh-link-….run.app/oauth-redirect
+PLAID_COMPLETION_URI=https://spearfresh-link-….run.app/link-complete
+PLAID_WEBHOOK_URI=https://spearfresh-link-….run.app/webhook
 ```
 
 Register **exactly** `…/oauth-redirect` in Plaid Dashboard → Allowed redirect URIs.
@@ -144,6 +157,7 @@ Runtime SA must have `roles/run.invoker` on `plaid-api` (deploy script sets this
 ```bash
 PLAID_CLIENT_ID / PLAID_SECRET / PLAID_ENV
 PLAID_ITEMS_GCS_URI=gs://…
+PLAID_TOKEN_ENCRYPTION_KEY=…   # Secret Manager: plaid-token-encryption-key
 PLAID_REDIRECT_URI / PLAID_COMPLETION_URI / PLAID_WEBHOOK_URI  # link hostname
 PLAID_APP_MODE=api|link
 ```

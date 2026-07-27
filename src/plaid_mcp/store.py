@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from plaid_mcp.config import get_settings
+from plaid_mcp.token_crypto import decrypt_token, encrypt_token, is_encrypted_token
 
 _lock = threading.Lock()
 _gcs_client = None
@@ -94,21 +95,34 @@ def _write(data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def list_items() -> list[dict[str, Any]]:
+def _token_prefix(plain_or_encrypted: str) -> str:
+    """Safe list hint: prefer stored prefix; never expose ciphertext as prefix."""
+    if is_encrypted_token(plain_or_encrypted):
+        return ""
+    return plain_or_encrypted[:24]
+
+
+def list_items(*, client_user_id: str | None = None) -> list[dict[str, Any]]:
     with _lock:
         data = _read()
     items = []
     for item_id, record in data["items"].items():
+        record_user = record.get("client_user_id")
+        if client_user_id is not None and record_user != client_user_id:
+            continue
+        stored_token = record.get("access_token") or ""
+        prefix = record.get("access_token_prefix") or _token_prefix(str(stored_token))
         items.append(
             {
                 "item_id": item_id,
                 "label": record.get("label"),
-                "client_user_id": record.get("client_user_id"),
+                "client_user_id": record_user,
                 "institution_id": record.get("institution_id"),
+                "institution_name": record.get("institution_name"),
                 "created_at": record.get("created_at"),
                 "updated_at": record.get("updated_at"),
-                # Expose a redacted hint only in list views.
-                "access_token_prefix": (record.get("access_token") or "")[:24],
+                # Expose a redacted hint only in list views (never ciphertext).
+                "access_token_prefix": prefix,
             }
         )
     items.sort(key=lambda row: row.get("updated_at") or "", reverse=True)
@@ -122,15 +136,47 @@ def get_item(item_id: str) -> dict[str, Any] | None:
         return dict(record) if record else None
 
 
-def get_access_token(*, item_id: str | None = None, access_token: str | None = None) -> str:
+def assert_item_owner(item_id: str, client_user_id: str | None) -> dict[str, Any]:
+    """Load item and optionally enforce client_user_id ownership."""
+    record = get_item(item_id)
+    if not record:
+        raise KeyError(f"Unknown item_id: {item_id}")
+    if client_user_id is not None and record.get("client_user_id") != client_user_id:
+        raise PermissionError(f"item_id {item_id} is not owned by this user")
+    return record
+
+
+def get_access_token(
+    *,
+    item_id: str | None = None,
+    access_token: str | None = None,
+    client_user_id: str | None = None,
+) -> str:
     if access_token:
         return access_token
     if not item_id:
         raise ValueError("Provide item_id or access_token")
-    record = get_item(item_id)
-    if not record or not record.get("access_token"):
+    record = assert_item_owner(item_id, client_user_id)
+    stored = record.get("access_token")
+    if not stored:
         raise KeyError(f"Unknown item_id: {item_id}")
-    return str(record["access_token"])
+    plain = decrypt_token(str(stored))
+    # Lazy re-encrypt legacy plaintext on read path via upsert when key is set.
+    if not is_encrypted_token(str(stored)):
+        try:
+            upsert_item(
+                item_id=item_id,
+                access_token=plain,
+                label=record.get("label"),
+                client_user_id=record.get("client_user_id"),
+                institution_id=record.get("institution_id"),
+                institution_name=record.get("institution_name"),
+                request_id=record.get("request_id"),
+            )
+        except Exception:
+            # Best-effort migration; still return usable plaintext.
+            pass
+    return plain
 
 
 def upsert_item(
@@ -140,9 +186,12 @@ def upsert_item(
     label: str | None = None,
     client_user_id: str | None = None,
     institution_id: str | None = None,
-    public_token: str | None = None,
+    institution_name: str | None = None,
     request_id: str | None = None,
 ) -> dict[str, Any]:
+    plain = decrypt_token(access_token) if is_encrypted_token(access_token) else access_token
+    encrypted = encrypt_token(plain)
+    prefix = plain[:24]
     with _lock:
         data = _read()
         existing = data["items"].get(item_id, {})
@@ -150,7 +199,8 @@ def upsert_item(
         record = {
             **existing,
             "item_id": item_id,
-            "access_token": access_token,
+            "access_token": encrypted,
+            "access_token_prefix": prefix,
             "label": label if label is not None else existing.get("label"),
             "client_user_id": client_user_id
             if client_user_id is not None
@@ -158,18 +208,35 @@ def upsert_item(
             "institution_id": institution_id
             if institution_id is not None
             else existing.get("institution_id"),
-            "public_token": public_token
-            if public_token is not None
-            else existing.get("public_token"),
+            "institution_name": institution_name
+            if institution_name is not None
+            else existing.get("institution_name"),
             "request_id": request_id
             if request_id is not None
             else existing.get("request_id"),
             "created_at": existing.get("created_at") or now,
             "updated_at": now,
         }
+        # Do not retain public_token at rest.
+        record.pop("public_token", None)
         data["items"][item_id] = record
         _write(data)
         return dict(record)
+
+
+def delete_item(item_id: str, *, client_user_id: str | None = None) -> dict[str, Any]:
+    """Remove an item from the store after ownership check. Returns the removed record."""
+    with _lock:
+        data = _read()
+        record = data["items"].get(item_id)
+        if not record:
+            raise KeyError(f"Unknown item_id: {item_id}")
+        if client_user_id is not None and record.get("client_user_id") != client_user_id:
+            raise PermissionError(f"item_id {item_id} is not owned by this user")
+        removed = dict(record)
+        del data["items"][item_id]
+        _write(data)
+        return removed
 
 
 def remember_pending_link(

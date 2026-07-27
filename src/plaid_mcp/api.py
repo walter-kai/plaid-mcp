@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from plaid_mcp import services
@@ -17,16 +17,22 @@ class CreateLinkSessionBody(BaseModel):
     label: str | None = None
     client_user_id: str | None = None
     countries: list[str] | None = None
+    require_client_user_id: bool = False
 
 
 class ItemRefBody(BaseModel):
     item_id: str | None = None
     access_token: str | None = None
+    client_user_id: str | None = None
 
 
 class TransactionsSyncBody(ItemRefBody):
     cursor: str | None = None
     count: int = Field(default=500, ge=1, le=500)
+
+
+class RemoveItemBody(BaseModel):
+    client_user_id: str | None = None
 
 
 @router.post("/link/sessions")
@@ -38,6 +44,7 @@ def create_link_session(body: CreateLinkSessionBody) -> dict[str, Any]:
             label=body.label,
             client_user_id=body.client_user_id,
             countries=body.countries,
+            require_client_user_id=body.require_client_user_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -46,9 +53,27 @@ def create_link_session(body: CreateLinkSessionBody) -> dict[str, Any]:
 
 
 @router.get("/items")
-def list_items() -> dict[str, Any]:
-    """List stored Plaid Items (access tokens redacted)."""
-    return services.list_items()
+def list_items(
+    client_user_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """List stored Plaid Items (access tokens redacted). Filter by client_user_id when set."""
+    return services.list_items(client_user_id=client_user_id)
+
+
+@router.delete("/items/{item_id}")
+def delete_item(
+    item_id: str,
+    client_user_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Revoke Item at Plaid and delete from store. Enforce ownership when client_user_id is set."""
+    try:
+        return services.remove_item(item_id=item_id, client_user_id=client_user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/accounts/get")
@@ -58,7 +83,10 @@ def accounts_get(body: ItemRefBody) -> dict[str, Any]:
         return services.accounts_get(
             item_id=body.item_id,
             access_token=body.access_token,
+            client_user_id=body.client_user_id,
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -74,7 +102,10 @@ def transactions_sync(body: TransactionsSyncBody) -> dict[str, Any]:
             access_token=body.access_token,
             cursor=body.cursor,
             count=body.count,
+            client_user_id=body.client_user_id,
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

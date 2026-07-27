@@ -10,6 +10,7 @@ from plaid.api import plaid_api
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.link_token_create_hosted_link import LinkTokenCreateHostedLink
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
@@ -160,6 +161,14 @@ def exchange_public_token(public_token: str, settings: Settings | None = None) -
     response = client.item_public_token_exchange(
         ItemPublicTokenExchangeRequest(public_token=public_token)
     )
+    return _to_dict(response)
+
+
+def item_remove(access_token: str, settings: Settings | None = None) -> dict[str, Any]:
+    """Revoke an Item access token via Plaid /item/remove."""
+    settings = settings or get_settings()
+    client = get_client(settings)
+    response = client.item_remove(ItemRemoveRequest(access_token=access_token))
     return _to_dict(response)
 
 

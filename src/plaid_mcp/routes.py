@@ -119,7 +119,6 @@ def register_link_routes(app: FastAPI, *, include_health: bool = True) -> None:
                         access_token=access_token,
                         label=(pending or {}).get("label"),
                         client_user_id=(pending or {}).get("client_user_id"),
-                        public_token=public_token,
                         request_id=exchanged.get("request_id"),
                     )
                     saved.append(

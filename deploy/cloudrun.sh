@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy TWO Cloud Run services from the same image:
-#   plaid-link  — public (Hosted Link redirect / completion / webhook)
-#   plaid-api   — private IAM (spearfresh invokes with identity token)
+#   spearfresh-link — public (Hosted Link redirect / completion / webhook; shared callbacks hub)
+#   plaid-api       — private IAM (spearfresh invokes with identity token)
 #
 # Prerequisites:
 #   gcloud auth login && gcloud config set project YOUR_PROJECT_ID
@@ -11,6 +11,7 @@
 #   printf '%s' "$PLAID_CLIENT_ID" | gcloud secrets create plaid-client-id --data-file=-
 #   printf '%s' "$PLAID_SECRET" | gcloud secrets create plaid-secret --data-file=-
 #   openssl rand -hex 32 | gcloud secrets create plaid-service-key --data-file=-   # optional 2nd factor
+#   openssl rand -base64 32 | gcloud secrets create plaid-token-encryption-key --data-file=-
 #
 # Required env:
 #   PROJECT_ID
@@ -30,7 +31,7 @@ REPO="${REPO:-plaid-mcp}"
 IMAGE_NAME="${IMAGE_NAME:-plaid-mcp}"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${IMAGE_NAME}:latest"
 
-LINK_SERVICE="${LINK_SERVICE:-plaid-link}"
+LINK_SERVICE="${LINK_SERVICE:-spearfresh-link}"
 API_SERVICE="${API_SERVICE:-plaid-api}"
 
 PLAID_ENV="${PLAID_ENV:-production}"
@@ -63,6 +64,11 @@ COMMON_SECRETS="PLAID_CLIENT_ID=plaid-client-id:latest,PLAID_SECRET=plaid-secret
 # Service key is optional; attach if the secret exists.
 if gcloud secrets describe plaid-service-key >/dev/null 2>&1; then
   COMMON_SECRETS="${COMMON_SECRETS},PLAID_SERVICE_KEY=plaid-service-key:latest"
+fi
+if gcloud secrets describe plaid-token-encryption-key >/dev/null 2>&1; then
+  COMMON_SECRETS="${COMMON_SECRETS},PLAID_TOKEN_ENCRYPTION_KEY=plaid-token-encryption-key:latest"
+else
+  echo "WARNING: secret plaid-token-encryption-key missing — create it before production deploy" >&2
 fi
 
 deploy_link() {

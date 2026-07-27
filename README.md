@@ -4,8 +4,8 @@ Private **Plaid Transactions** backend split for GCP:
 
 | Cloud Run service | Public? | Role |
 |---|---|---|
+| `spearfresh-link` | **Yes** | Shared public callbacks (Plaid Link redirect / webhook; future Stripe etc.) |
 | `plaid-api` | **No** (IAM invoker) | REST `/api/v1/*` for spearfresh |
-| `plaid-link` | **Yes** | Hosted Link redirect / completion / webhook |
 
 Claude OAuth + Claude-facing MCP live in **spearfresh-ui**. Full contract: **[INTEGRATION.md](INTEGRATION.md)**.
 
@@ -14,7 +14,7 @@ Claude OAuth + Claude-facing MCP live in **spearfresh-ui**. Full contract: **[IN
 ```text
 Claude → spearfresh-ui (OAuth + MCP)
             → ID token → plaid-api (private) /api/v1/*
-Browser/Plaid → plaid-link (public) /oauth-redirect|/webhook
+Browser/Plaid → spearfresh-link (public) /oauth-redirect|/webhook
                     ↘ shared GCS Items
 ```
 
