@@ -114,17 +114,22 @@ def register_link_routes(app: FastAPI, *, include_health: bool = True) -> None:
                     access_token = exchanged.get("access_token")
                     if not item_id or not access_token:
                         continue
+                    institution = plaid_client.resolve_institution_metadata(access_token)
                     record = store.upsert_item(
                         item_id=item_id,
                         access_token=access_token,
                         label=(pending or {}).get("label"),
                         client_user_id=(pending or {}).get("client_user_id"),
+                        institution_id=institution.get("institution_id"),
+                        institution_name=institution.get("institution_name"),
                         request_id=exchanged.get("request_id"),
                     )
                     saved.append(
                         {
                             "item_id": record["item_id"],
                             "label": record.get("label"),
+                            "institution_id": record.get("institution_id"),
+                            "institution_name": record.get("institution_name"),
                         }
                     )
 

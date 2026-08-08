@@ -9,6 +9,8 @@ import plaid
 from plaid.api import plaid_api
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
+from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
+from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.link_token_create_hosted_link import LinkTokenCreateHostedLink
@@ -162,6 +164,66 @@ def exchange_public_token(public_token: str, settings: Settings | None = None) -
         ItemPublicTokenExchangeRequest(public_token=public_token)
     )
     return _to_dict(response)
+
+
+def item_get(access_token: str, settings: Settings | None = None) -> dict[str, Any]:
+    """Fetch Item metadata (includes institution_id when available)."""
+    settings = settings or get_settings()
+    client = get_client(settings)
+    response = client.item_get(ItemGetRequest(access_token=access_token))
+    return _to_dict(response)
+
+
+def institutions_get_by_id(
+    institution_id: str,
+    *,
+    country_codes: list[str] | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Resolve institution display name (and related metadata) by id."""
+    settings = settings or get_settings()
+    client = get_client(settings)
+    codes = [CountryCode(code) for code in (country_codes or ["US", "CA"])]
+    response = client.institutions_get_by_id(
+        InstitutionsGetByIdRequest(
+            institution_id=institution_id,
+            country_codes=codes,
+        )
+    )
+    return _to_dict(response)
+
+
+def resolve_institution_metadata(
+    access_token: str,
+    settings: Settings | None = None,
+) -> dict[str, str | None]:
+    """Return institution_id / institution_name for an Item access token."""
+    try:
+        item_payload = item_get(access_token, settings=settings)
+    except Exception:
+        return {"institution_id": None, "institution_name": None}
+
+    item = item_payload.get("item") if isinstance(item_payload, dict) else None
+    institution_id = None
+    if isinstance(item, dict):
+        institution_id = item.get("institution_id")
+    if not institution_id or not isinstance(institution_id, str):
+        return {"institution_id": None, "institution_name": None}
+
+    try:
+        institution_payload = institutions_get_by_id(institution_id, settings=settings)
+        institution = (
+            institution_payload.get("institution")
+            if isinstance(institution_payload, dict)
+            else None
+        )
+        name = institution.get("name") if isinstance(institution, dict) else None
+        return {
+            "institution_id": institution_id,
+            "institution_name": name if isinstance(name, str) else None,
+        }
+    except Exception:
+        return {"institution_id": institution_id, "institution_name": None}
 
 
 def item_remove(access_token: str, settings: Settings | None = None) -> dict[str, Any]:

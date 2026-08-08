@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from plaid_mcp import plaid_client, store
@@ -17,10 +16,20 @@ def create_link_session(
     countries: list[str] | None = None,
     require_client_user_id: bool = False,
 ) -> dict[str, Any]:
-    """Start a Plaid Hosted Link session for Transactions."""
-    if require_client_user_id and not (client_user_id and str(client_user_id).strip()):
+    """Start a Plaid Hosted Link session for Transactions.
+
+    Spearfresh (and other callers) should pass a stable opaque ``client_user_id``
+    (e.g. ``user-<uuid>``), never email/PII. Random ids are not generated here —
+    missing ids fail when ``require_client_user_id`` is set, otherwise Link is
+    rejected so Items are never orphaned under an ephemeral key.
+    """
+    user_id = (client_user_id and str(client_user_id).strip()) or ""
+    if require_client_user_id and not user_id:
         raise ValueError("client_user_id is required")
-    user_id = (client_user_id and str(client_user_id).strip()) or f"user-{uuid.uuid4()}"
+    if not user_id:
+        raise ValueError(
+            "client_user_id is required (stable opaque id such as user-<uuid>; do not use email)"
+        )
     session = plaid_client.create_hosted_link_session(
         client_user_id=user_id,
         label=label,
@@ -52,9 +61,61 @@ def create_link_session(
     return result
 
 
+def enrich_item_institution(
+    *,
+    item_id: str,
+    access_token: str | None = None,
+    client_user_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch and persist institution_id / institution_name for a stored Item."""
+    record = store.assert_item_owner(item_id, client_user_id)
+    token = access_token or store.get_access_token(
+        item_id=item_id,
+        client_user_id=client_user_id,
+    )
+    meta = plaid_client.resolve_institution_metadata(token)
+    if not meta.get("institution_id") and not meta.get("institution_name"):
+        return dict(record)
+    updated = store.upsert_item(
+        item_id=item_id,
+        access_token=token,
+        label=record.get("label"),
+        client_user_id=record.get("client_user_id"),
+        institution_id=meta.get("institution_id"),
+        institution_name=meta.get("institution_name"),
+        request_id=record.get("request_id"),
+    )
+    return updated
+
+
 def list_items(*, client_user_id: str | None = None) -> dict[str, Any]:
     items = store.list_items(client_user_id=client_user_id)
-    return {"items": items, "count": len(items)}
+    # Best-effort backfill for Items linked before institution metadata was persisted.
+    enriched: list[dict[str, Any]] = []
+    for row in items:
+        if row.get("institution_id") and row.get("institution_name"):
+            enriched.append(row)
+            continue
+        item_id = row.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            enriched.append(row)
+            continue
+        try:
+            updated = enrich_item_institution(
+                item_id=item_id,
+                client_user_id=client_user_id or row.get("client_user_id"),
+            )
+            enriched.append(
+                {
+                    **row,
+                    "institution_id": updated.get("institution_id"),
+                    "institution_name": updated.get("institution_name"),
+                    "updated_at": updated.get("updated_at") or row.get("updated_at"),
+                }
+            )
+        except Exception:
+            enriched.append(row)
+    return {"items": enriched, "count": len(enriched)}
 
 
 def accounts_get(

@@ -91,31 +91,33 @@ Do **not** put the service key in `Authorization` when using IAM — that header
 ### `POST /api/v1/link/sessions`
 
 ```json
-{ "country": "both", "label": null, "client_user_id": "user@example.com", "countries": null, "require_client_user_id": true }
+{ "country": "both", "label": null, "client_user_id": "user-72f8d0e7-0810-4958-8412-b358a6a147eb", "countries": null, "require_client_user_id": true }
 ```
 
 `country`: `"US"` | `"CA"` | `"both"`. Returns `hosted_link_url`, `link_token`, …
 
-For Spearfresh dashboard Connectors, always pass the signed-in user email as `client_user_id` and set `require_client_user_id: true`.
+For Spearfresh dashboard Connectors and MCP tools, always pass a **stable opaque** `client_user_id` (format `user-<uuid>`, stored on the Spearfresh user as `plaidClientUserId`) and set `require_client_user_id: true`. **Do not use email or other PII** as `client_user_id`.
 
-### `GET /api/v1/items?client_user_id=user@example.com`
+### `GET /api/v1/items?client_user_id=user-<uuid>`
 
 Lists Items for that user only (access tokens redacted to prefix). Omit `client_user_id` only for trusted admin/debug callers — Spearfresh must always pass it.
 
-### `DELETE /api/v1/items/{item_id}?client_user_id=user@example.com`
+When `institution_id` / `institution_name` are missing, list performs a best-effort backfill via `/item/get` + `/institutions/get_by_id` and persists the result.
+
+### `DELETE /api/v1/items/{item_id}?client_user_id=user-<uuid>`
 
 Calls Plaid `/item/remove`, deletes the Item from the encrypted store. Returns 403 if `client_user_id` does not own the item.
 
 ### `POST /api/v1/accounts/get`
 
 ```json
-{ "item_id": "...", "client_user_id": "user@example.com" }
+{ "item_id": "...", "client_user_id": "user-<uuid>" }
 ```
 
 ### `POST /api/v1/transactions/sync`
 
 ```json
-{ "item_id": "...", "cursor": null, "count": 500, "client_user_id": "user@example.com" }
+{ "item_id": "...", "cursor": null, "count": 500, "client_user_id": "user-<uuid>" }
 ```
 
 Server paginates; returns `added` / `modified` / `removed` / `next_cursor`.
@@ -124,7 +126,8 @@ Server paginates; returns `added` / `modified` / `removed` / `next_cursor`.
 
 - Item `access_token`s are stored **only** in plaid-mcp (`PLAID_ITEMS_PATH` locally or `PLAID_ITEMS_GCS_URI` in Cloud Run).
 - Values are **AES-256-GCM** encrypted (`enc:v1:iv:tag:ciphertext`) using `PLAID_TOKEN_ENCRYPTION_KEY` (required when `PLAID_ENV=production`).
-- Spearfresh must **not** store Plaid access tokens in Firestore user docs. Spearfresh may store non-secret `connectors.plaid` metadata (`connected`, `itemIds`, institutions).
+- Spearfresh must **not** store Plaid access tokens in Firestore user docs. Spearfresh may store non-secret `connectors.plaid` metadata (`connected`, `itemIds`, institutions) plus the opaque `plaidClientUserId`.
+- On Hosted Link `SESSION_FINISHED`, plaid-mcp exchanges the public token, calls `/item/get` + `/institutions/get_by_id`, and persists `institution_id` / `institution_name` on the Item record.
 - `public_token` is not retained after exchange.
 
 ## Public link service (spearfresh-link)

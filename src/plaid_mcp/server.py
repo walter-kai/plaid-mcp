@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastmcp import FastMCP
@@ -14,6 +15,7 @@ mcp = FastMCP(
         "LOCAL ONLY. Production Claude should use spearfresh-ui MCP. "
         "Connect a bank via Hosted Link, then sync transactions. "
         "Ask US vs Canada; use country='CA', 'US', or 'both'. "
+        "Pass a stable opaque client_user_id (user-<uuid>); never email. "
         "Flow: create_link_session → open hosted_link_url → list_items → transactions_sync."
     ),
 )
@@ -27,11 +29,14 @@ def create_link_session(
     countries: list[str] | None = None,
 ) -> dict[str, Any]:
     """Start a Plaid Hosted Link session for Transactions (local stdio helper)."""
+    # Local helper only — production Spearfresh persists user-<uuid> on the user doc.
+    resolved = (client_user_id and str(client_user_id).strip()) or f"user-{uuid.uuid4()}"
     return services.create_link_session(
         country=country,
         label=label,
-        client_user_id=client_user_id,
+        client_user_id=resolved,
         countries=countries,
+        require_client_user_id=True,
     )
 
 
