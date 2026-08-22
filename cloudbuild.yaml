@@ -1,0 +1,127 @@
+# Build and deploy plaid-mcp to Cloud Run (us-central1, project-11368 / waltyao).
+# Two services from one image:
+#   spearfresh-link — public Plaid callbacks
+#   plaid-api       — private REST for waltyao-mcp / spearfresh callers
+#
+# Prerequisites in project-11368:
+#   Secrets: plaid-client-id, plaid-secret, plaid-token-encryption-key
+#   Optional: plaid-service-key
+#   GCS path: $_PLAID_ITEMS_GCS_URI (runtime SA needs objectAdmin on bucket)
+
+substitutions:
+  _AR_HOSTNAME: us-central1-docker.pkg.dev
+  _AR_PROJECT_ID: project-11368
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _DEPLOY_REGION: us-central1
+  _LINK_SERVICE: spearfresh-link
+  _API_SERVICE: plaid-api
+  _PLAID_ITEMS_GCS_URI: gs://run-sources-project-11368-us-central1/plaid-mcp/items.json
+  _SPEARFRESH_INVOKER_SA: firebase-adminsdk-fbsvc@project-11368.iam.gserviceaccount.com
+  _TRIGGER_ID: ""
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitutionOption: ALLOW_LOOSE
+
+steps:
+  - id: Build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp:$COMMIT_SHA
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp:latest
+      - .
+      - -f
+      - Dockerfile
+
+  - id: Push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp
+
+  - id: Deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        IMAGE="$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp:$COMMIT_SHA"
+        REGION="$_DEPLOY_REGION"
+        LINK="$_LINK_SERVICE"
+        API="$_API_SERVICE"
+        GCS="$_PLAID_ITEMS_GCS_URI"
+        INVOKER="$_SPEARFRESH_INVOKER_SA"
+
+        COMMON_SECRETS="PLAID_CLIENT_ID=plaid-client-id:latest,PLAID_SECRET=plaid-secret:latest,PLAID_TOKEN_ENCRYPTION_KEY=plaid-token-encryption-key:latest"
+        if gcloud secrets describe plaid-service-key --project="$_AR_PROJECT_ID" >/dev/null 2>&1; then
+          COMMON_SECRETS="$${COMMON_SECRETS},PLAID_SERVICE_KEY=plaid-service-key:latest"
+        fi
+
+        LABELS="managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA"
+        if [ -n "$_TRIGGER_ID" ]; then
+          LABELS="$${LABELS},gcb-trigger-id=$_TRIGGER_ID"
+        fi
+        LABELS="$${LABELS},gcb-build-id=$BUILD_ID"
+
+        deploy_link() {
+          gcloud run deploy "$LINK" \
+            --project="$_AR_PROJECT_ID" \
+            --image "$IMAGE" \
+            --region "$REGION" \
+            --platform managed \
+            --allow-unauthenticated \
+            --memory 512Mi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 3 \
+            --service-account "$INVOKER" \
+            --set-env-vars "PLAID_APP_MODE=link,PLAID_ENV=production,PLAID_ITEMS_GCS_URI=$GCS,PLAID_REDIRECT_URI=$${1}/oauth-redirect,PLAID_COMPLETION_URI=$${1}/link-complete,PLAID_WEBHOOK_URI=$${1}/webhook" \
+            --set-secrets "$COMMON_SECRETS" \
+            --labels "$LABELS" \
+            --quiet
+        }
+
+        deploy_link "https://placeholder.invalid"
+        LINK_URL="$(gcloud run services describe "$LINK" --project="$_AR_PROJECT_ID" --region "$REGION" --format='value(status.url)')"
+        deploy_link "$LINK_URL"
+
+        gcloud run deploy "$API" \
+          --project="$_AR_PROJECT_ID" \
+          --image "$IMAGE" \
+          --region "$REGION" \
+          --platform managed \
+          --no-allow-unauthenticated \
+          --memory 512Mi \
+          --cpu 1 \
+          --min-instances 0 \
+          --max-instances 3 \
+          --service-account "$INVOKER" \
+          --set-env-vars "PLAID_APP_MODE=api,PLAID_ENV=production,PLAID_ITEMS_GCS_URI=$GCS,PLAID_REDIRECT_URI=$LINK_URL/oauth-redirect,PLAID_COMPLETION_URI=$LINK_URL/link-complete,PLAID_WEBHOOK_URI=$LINK_URL/webhook" \
+          --set-secrets "$COMMON_SECRETS" \
+          --labels "$LABELS" \
+          --quiet
+
+        gcloud run services add-iam-policy-binding "$API" \
+          --project="$_AR_PROJECT_ID" \
+          --region "$REGION" \
+          --member="serviceAccount:$INVOKER" \
+          --role="roles/run.invoker" \
+          --quiet
+
+        API_URL="$(gcloud run services describe "$API" --project="$_AR_PROJECT_ID" --region "$REGION" --format='value(status.url)')"
+        echo "Link (public): $LINK_URL"
+        echo "API (private): $API_URL"
+
+images:
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp:$COMMIT_SHA
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp:latest
+
+tags:
+  - gcp-cloud-build-deploy-cloud-run
+  - gcp-cloud-build-deploy-cloud-run-managed
+  - plaid-mcp
