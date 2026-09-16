@@ -1,15 +1,23 @@
-# Integration contract for spearfresh-ui (and sibling agents)
+# Integration contract for callers (spearfresh + waltyao)
 
-> **Audience:** agents/humans in `/Users/yaoza/Projects/spearfresh-ui`  
 > **This repo:** Plaid Hosted Link + private REST API  
-> **Not here:** Claude OAuth / Claude-facing MCP (spearfresh owns that)
+> **Not here:** Claude OAuth / Claude-facing MCP (product MCP servers own that)
 
-## Architecture
+## Callers (same REST contract, different callback hosts)
+
+| Caller | MCP / site | Plaid upstream | Callback host (Hosted Link URIs) | Items GCS |
+|---|---|---|---|---|
+| Spearfresh | `spearfresh-mcp` / UI | `plaid-api` + `spearfresh-link` | `spearfresh-link` Cloud Run URL | Spearfresh path (e.g. `…/plaid-mcp/items.json`) |
+| Walt Yao | `waltyao-api-mcp` → `waltyao.com` | **`plaid-mcp`** (`PLAID_APP_MODE=all`) | **`https://waltyao.com`** | Separate path (e.g. `…/waltyao-plaid/items.json`) |
+
+Both callers use the same `/api/v1/*` contract and IAM ID-token auth. Do **not** put Spearfresh hostnames in the waltyao flow (or vice versa).
+
+## Architecture (Spearfresh)
 
 Two Cloud Run services, one image (`PLAID_APP_MODE`):
 
 ```text
-Claude ──OAuth+MCP──► spearfresh-ui
+Claude ──OAuth+MCP──► spearfresh-mcp / spearfresh-ui
                          │
                          │ HTTPS + Google ID token (roles/run.invoker)
                          │ optional X-Plaid-Service-Key
@@ -22,19 +30,46 @@ Claude ──OAuth+MCP──► spearfresh-ui
 Browser / Plaid ──────► spearfresh-link (PUBLIC)
                          /oauth-redirect  /link-complete  /webhook
                          │
-                         └─ writes Items to shared GCS
+                         └─ writes Items to Spearfresh GCS
 ```
 
 | Service | Mode | Auth | Purpose |
 |---|---|---|---|
-| `spearfresh-link` | `link` | Public | Shared callbacks (Plaid now; Stripe etc. later) |
+| `spearfresh-link` | `link` | Public | Spearfresh callbacks |
 | `plaid-api` | `api` | Cloud Run IAM (no unauthenticated) | REST for spearfresh |
 
 Shared GCS (`PLAID_ITEMS_GCS_URI`) so webhook (link) and readers (api) see the same Items.
 
-## What spearfresh-ui must do
+## Architecture (Walt Yao)
 
-### 1. Claude MCP tools (in spearfresh)
+One private Cloud Run service (`plaid-mcp`, `PLAID_APP_MODE=all`). Browser never talks to it directly:
+
+```text
+Browser ──► waltyao.com ──► waltyao-api-mcp
+                               │  ID token + optional X-Plaid-Service-Key
+                               ├─ /api/v1/* ──────────────► plaid-mcp (PRIVATE)
+                               └─ /oauth-redirect|link-complete|webhook ──► plaid-mcp
+                                      ▲
+Plaid.com webhooks / Hosted Link ─────┘  (via https://waltyao.com/…)
+```
+
+Hosted Link env on the waltyao `plaid-mcp` deploy:
+
+```text
+PLAID_REDIRECT_URI=https://waltyao.com/oauth-redirect
+PLAID_COMPLETION_URI=https://waltyao.com/link-complete
+PLAID_WEBHOOK_URI=https://waltyao.com/webhook
+```
+
+Allowlist **exactly** `https://waltyao.com/oauth-redirect` in Plaid Dashboard → Allowed redirect URIs.
+
+Deploy: `./deploy/cloudrun-waltyao.sh` or Cloud Build `cloudbuild-waltyao.yaml`. Defaults for Spearfresh (`_LINK_SERVICE=spearfresh-link`, `_API_SERVICE=plaid-api`) stay in `cloudbuild.yaml` / `./deploy/cloudrun.sh`.
+
+## What product MCP servers must do
+
+Applies to **spearfresh-mcp** and **waltyao-api-mcp** (same contract).
+
+### 1. Claude MCP tools (in the product MCP)
 
 Wrap REST → MCP (Claude never calls plaid-* directly):
 
@@ -47,13 +82,17 @@ Wrap REST → MCP (Claude never calls plaid-* directly):
 
 Flow: ask US/CA → create session → user opens `hosted_link_url` → list items → sync.
 
-### 2. Call private `plaid-api` with IAM (required)
+### 2. Call private upstream with IAM (required)
 
 ```bash
-PLAID_SERVICE_URL=https://plaid-api-xxxxx.run.app   # API service URL only
+# Spearfresh:
+PLAID_SERVICE_URL=https://plaid-api-xxxxx.run.app
+
+# Walt Yao (single api+link service):
+PLAID_SERVICE_URL=https://plaid-mcp-xxxxx.run.app
 ```
 
-From the spearfresh **Cloud Run / GCE SA** that was granted `roles/run.invoker` on `plaid-api`:
+From the caller **Cloud Run SA** granted `roles/run.invoker` on that upstream:
 
 **Node (google-auth-library):**
 
@@ -74,11 +113,11 @@ const res = await client.request({
 
 Audience for the ID token **must** be the API service URL (`PLAID_SERVICE_URL`).
 
-Do **not** use the public link URL for API calls.
+For Spearfresh, do **not** use the public link URL for API calls. For Walt Yao, API and link share one private URL; `waltyao-api-mcp` also forwards `/oauth-redirect`, `/link-complete`, and `/webhook` to that same base with an ID token.
 
 ### 3. Optional service key
 
-If Secret `plaid-service-key` is mounted on `plaid-api`, also send:
+If Secret `plaid-service-key` is mounted on the upstream (`plaid-api` or `plaid-mcp`), also send:
 
 ```http
 X-Plaid-Service-Key: <PLAID_SERVICE_KEY>
@@ -86,7 +125,7 @@ X-Plaid-Service-Key: <PLAID_SERVICE_KEY>
 
 Do **not** put the service key in `Authorization` when using IAM — that header carries the Google ID token.
 
-## REST API (on plaid-api)
+## REST API (on plaid-api / plaid-mcp)
 
 ### `POST /api/v1/link/sessions`
 
@@ -146,7 +185,7 @@ spearfresh does not proxy these.
 
 ## Env cheat sheet
 
-**spearfresh-ui**
+**spearfresh-mcp / spearfresh-ui**
 
 ```bash
 PLAID_SERVICE_URL=https://plaid-api-….run.app
@@ -155,14 +194,33 @@ PLAID_SERVICE_URL=https://plaid-api-….run.app
 
 Runtime SA must have `roles/run.invoker` on `plaid-api` (deploy script sets this via `SPEARFRESH_INVOKER_SA`).
 
-**plaid-mcp (both services)**
+**waltyao-api-mcp**
+
+```bash
+PLAID_SERVICE_URL=https://plaid-mcp-….run.app
+# PLAID_SERVICE_KEY=...   # only if second factor enabled
+```
+
+Runtime SA must have `roles/run.invoker` on `plaid-mcp` (`WALTYAO_INVOKER_SA` in `./deploy/cloudrun-waltyao.sh`).
+
+**plaid-mcp image (Spearfresh pair)**
 
 ```bash
 PLAID_CLIENT_ID / PLAID_SECRET / PLAID_ENV
-PLAID_ITEMS_GCS_URI=gs://…
+PLAID_ITEMS_GCS_URI=gs://…/plaid-mcp/items.json
 PLAID_TOKEN_ENCRYPTION_KEY=…   # Secret Manager: plaid-token-encryption-key
-PLAID_REDIRECT_URI / PLAID_COMPLETION_URI / PLAID_WEBHOOK_URI  # link hostname
+PLAID_REDIRECT_URI / PLAID_COMPLETION_URI / PLAID_WEBHOOK_URI  # spearfresh-link hostname
 PLAID_APP_MODE=api|link
+```
+
+**plaid-mcp image (Walt Yao single service)**
+
+```bash
+PLAID_APP_MODE=all
+PLAID_ITEMS_GCS_URI=gs://…/waltyao-plaid/items.json   # do not reuse Spearfresh path
+PLAID_REDIRECT_URI=https://waltyao.com/oauth-redirect
+PLAID_COMPLETION_URI=https://waltyao.com/link-complete
+PLAID_WEBHOOK_URI=https://waltyao.com/webhook
 ```
 
 ## Local dev
@@ -177,6 +235,8 @@ Optional: `PLAID_SERVICE_KEY` to exercise API auth locally. No IAM locally.
 
 ## Deploy
 
+**Spearfresh (defaults unchanged):**
+
 ```bash
 export PROJECT_ID=spearfresh-11368
 export REGION=northamerica-northeast2
@@ -185,12 +245,23 @@ export PLAID_ITEMS_GCS_URI=gs://BUCKET/plaid-mcp/items.json
 ./deploy/cloudrun.sh
 ```
 
-Grant both Cloud Run runtime SAs `roles/storage.objectAdmin` on the Items bucket.
+**Walt Yao:**
+
+```bash
+export PROJECT_ID=project-11368
+export REGION=us-central1
+export WALTYAO_INVOKER_SA=firebase-adminsdk-fbsvc@project-11368.iam.gserviceaccount.com
+export PLAID_ITEMS_GCS_URI=gs://run-sources-project-11368-us-central1/waltyao-plaid/items.json
+./deploy/cloudrun-waltyao.sh
+```
+
+Grant the runtime SA `roles/storage.objectAdmin` on the Items bucket.
 
 ## Ownership
 
 | Concern | Owner |
 |---|---|
-| Claude connector + OAuth | spearfresh-ui |
+| Claude connector + OAuth (Spearfresh) | spearfresh-mcp |
+| Claude connector + OAuth + site auth (Walt Yao) | waltyao-api-mcp |
 | Plaid secrets, Link, webhook, REST | plaid-mcp |
-| Invoker IAM on plaid-api | deploy + spearfresh SA |
+| Invoker IAM | deploy + caller SA |

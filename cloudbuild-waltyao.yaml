@@ -1,0 +1,73 @@
+# Build and deploy the waltyao-oriented plaid-mcp upstream (single service, PLAID_APP_MODE=all).
+# Spearfresh continues to use cloudbuild.yaml → spearfresh-link + plaid-api.
+#
+# Prerequisites in project-11368:
+#   Secrets: plaid-client-id, plaid-secret, plaid-token-encryption-key
+#   Optional: plaid-service-key
+#   GCS path: $_PLAID_ITEMS_GCS_URI (separate from Spearfresh items.json)
+#   Invoker SA: $_WALTYAO_INVOKER_SA (waltyao-api-mcp runtime)
+
+substitutions:
+  _AR_HOSTNAME: us-central1-docker.pkg.dev
+  _AR_PROJECT_ID: project-11368
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _DEPLOY_REGION: us-central1
+  _SERVICE: plaid-mcp
+  _PLAID_ITEMS_GCS_URI: gs://run-sources-project-11368-us-central1/waltyao-plaid/items.json
+  _WALTYAO_INVOKER_SA: firebase-adminsdk-fbsvc@project-11368.iam.gserviceaccount.com
+  _PLAID_REDIRECT_URI: https://waltyao.com/oauth-redirect
+  _PLAID_COMPLETION_URI: https://waltyao.com/link-complete
+  _PLAID_WEBHOOK_URI: https://waltyao.com/webhook
+  _TRIGGER_ID: ""
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitutionOption: ALLOW_LOOSE
+
+steps:
+  - id: Build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp:$COMMIT_SHA
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp:latest
+      - .
+      - -f
+      - Dockerfile
+
+  - id: Push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp
+
+  - id: Deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - deploy/cloudbuild-deploy-waltyao.sh
+    env:
+      - AR_HOSTNAME=$_AR_HOSTNAME
+      - AR_PROJECT_ID=$_AR_PROJECT_ID
+      - AR_REPOSITORY=$_AR_REPOSITORY
+      - COMMIT_SHA=$COMMIT_SHA
+      - BUILD_ID=$BUILD_ID
+      - DEPLOY_REGION=$_DEPLOY_REGION
+      - SERVICE=$_SERVICE
+      - PLAID_ITEMS_GCS_URI=$_PLAID_ITEMS_GCS_URI
+      - WALTYAO_INVOKER_SA=$_WALTYAO_INVOKER_SA
+      - PLAID_REDIRECT_URI=$_PLAID_REDIRECT_URI
+      - PLAID_COMPLETION_URI=$_PLAID_COMPLETION_URI
+      - PLAID_WEBHOOK_URI=$_PLAID_WEBHOOK_URI
+      - TRIGGER_ID=$_TRIGGER_ID
+
+images:
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp:$COMMIT_SHA
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/plaid-mcp/plaid-mcp:latest
+
+tags:
+  - gcp-cloud-build-deploy-cloud-run
+  - plaid-mcp-waltyao
