@@ -124,7 +124,7 @@ def create_hosted_link_session(
 
     request = LinkTokenCreateRequest(
         products=[Products("transactions")],
-        client_name="Plaid MCP",
+        client_name="waltyao.com",
         country_codes=country_codes,
         language="en",
         user=LinkTokenCreateRequestUser(client_user_id=client_user_id),
