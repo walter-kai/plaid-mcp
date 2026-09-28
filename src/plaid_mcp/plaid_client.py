@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from functools import lru_cache
 from typing import Any
 
@@ -10,6 +11,13 @@ from plaid.api import plaid_api
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
+from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
+from plaid.model.investments_transactions_get_request import (
+    InvestmentsTransactionsGetRequest,
+)
+from plaid.model.investments_transactions_get_request_options import (
+    InvestmentsTransactionsGetRequestOptions,
+)
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.item_remove_request import ItemRemoveRequest
@@ -123,7 +131,7 @@ def create_hosted_link_session(
     country_codes = [CountryCode(code) for code in selected]
 
     request = LinkTokenCreateRequest(
-        products=[Products("transactions")],
+        products=[Products("transactions"), Products("investments")],
         client_name="waltyao.com",
         country_codes=country_codes,
         language="en",
@@ -290,4 +298,75 @@ def transactions_sync_all(
             "modified": len(modified),
             "removed": len(removed),
         },
+    }
+
+
+def investments_holdings_get(access_token: str, settings: Settings | None = None) -> dict[str, Any]:
+    """Fetch current investment holdings (positions + securities). Read-only."""
+    settings = settings or get_settings()
+    client = get_client(settings)
+    response = client.investments_holdings_get(
+        InvestmentsHoldingsGetRequest(access_token=access_token)
+    )
+    return _to_dict(response)
+
+
+def investments_transactions_get(
+    access_token: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    count: int = 500,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Fetch investment transactions (buys, sells, dividends, fees) between dates.
+
+    Read-only. Dates are ISO ``YYYY-MM-DD``; defaults to the last 730 days.
+    Paginates via offset until all rows are collected.
+    """
+    settings = settings or get_settings()
+    client = get_client(settings)
+
+    end = date.fromisoformat(end_date) if end_date else date.today()
+    start = date.fromisoformat(start_date) if start_date else end - timedelta(days=730)
+    page = min(max(count, 1), 500)
+
+    investment_transactions: list[dict[str, Any]] = []
+    securities: list[dict[str, Any]] = []
+    accounts: list[dict[str, Any]] = []
+    total = 0
+    offset = 0
+
+    while True:
+        response = client.investments_transactions_get(
+            InvestmentsTransactionsGetRequest(
+                access_token=access_token,
+                start_date=start,
+                end_date=end,
+                options=InvestmentsTransactionsGetRequestOptions(count=page, offset=offset),
+            )
+        )
+        payload = _to_dict(response)
+        batch = payload.get("investment_transactions") or []
+        investment_transactions.extend(batch)
+        if not securities:
+            securities = payload.get("securities") or []
+        if not accounts:
+            accounts = payload.get("accounts") or []
+        total = int(
+            payload.get("total_investment_transactions") or len(investment_transactions)
+        )
+        offset += len(batch)
+        # Stop when a short page or we've collected everything Plaid reports.
+        if not batch or offset >= total or offset >= 5000:
+            break
+
+    return {
+        "investment_transactions": investment_transactions,
+        "securities": securities,
+        "accounts": accounts,
+        "total_investment_transactions": total,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "count": len(investment_transactions),
     }

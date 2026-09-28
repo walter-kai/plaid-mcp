@@ -1,4 +1,4 @@
-"""Optional local stdio MCP for desktop testing. Production Claude MCP lives in spearfresh-ui."""
+"""Optional local stdio MCP for desktop testing. Production Claude MCP lives in waltyao-api-mcp."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from plaid_mcp import services
 mcp = FastMCP(
     name="plaid-transactions-local",
     instructions=(
-        "LOCAL ONLY. Production Claude should use spearfresh-ui MCP. "
+        "LOCAL ONLY. Production Claude should use waltyao-api-mcp. "
         "Connect a bank via Hosted Link, then sync transactions. "
         "Ask US vs Canada; use country='CA', 'US', or 'both'. "
         "Pass a stable opaque client_user_id (user-<uuid>); never email. "
@@ -67,6 +67,33 @@ def transactions_sync(
         item_id=item_id,
         access_token=access_token,
         cursor=cursor,
+        count=count,
+    )
+
+
+@mcp.tool
+def investments_holdings_get(
+    item_id: str | None = None,
+    access_token: str | None = None,
+) -> dict[str, Any]:
+    """Fetch investment holdings (positions + securities) for an item. Read-only."""
+    return services.investments_holdings_get(item_id=item_id, access_token=access_token)
+
+
+@mcp.tool
+def investments_transactions_get(
+    item_id: str | None = None,
+    access_token: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    count: int = 500,
+) -> dict[str, Any]:
+    """Fetch investment transactions (buys, sells, dividends, fees) by date. Read-only."""
+    return services.investments_transactions_get(
+        item_id=item_id,
+        access_token=access_token,
+        start_date=start_date,
+        end_date=end_date,
         count=count,
     )
 

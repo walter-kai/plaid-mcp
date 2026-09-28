@@ -1,4 +1,4 @@
-"""Private REST API for spearfresh (or other apps) to call Plaid operations."""
+"""Private REST API for waltyao-api-mcp to call Plaid operations."""
 
 from __future__ import annotations
 
@@ -28,6 +28,12 @@ class ItemRefBody(BaseModel):
 
 class TransactionsSyncBody(ItemRefBody):
     cursor: str | None = None
+    count: int = Field(default=500, ge=1, le=500)
+
+
+class InvestmentsTransactionsBody(ItemRefBody):
+    start_date: str | None = None
+    end_date: str | None = None
     count: int = Field(default=500, ge=1, le=500)
 
 
@@ -101,6 +107,43 @@ def transactions_sync(body: TransactionsSyncBody) -> dict[str, Any]:
             item_id=body.item_id,
             access_token=body.access_token,
             cursor=body.cursor,
+            count=body.count,
+            client_user_id=body.client_user_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/investments/holdings/get")
+def investments_holdings_get(body: ItemRefBody) -> dict[str, Any]:
+    """Fetch investment holdings (positions + securities) for an item. Read-only."""
+    try:
+        return services.investments_holdings_get(
+            item_id=body.item_id,
+            access_token=body.access_token,
+            client_user_id=body.client_user_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/investments/transactions/get")
+def investments_transactions_get(body: InvestmentsTransactionsBody) -> dict[str, Any]:
+    """Fetch investment transactions (buys, sells, dividends, fees) by date. Read-only."""
+    try:
+        return services.investments_transactions_get(
+            item_id=body.item_id,
+            access_token=body.access_token,
+            start_date=body.start_date,
+            end_date=body.end_date,
             count=body.count,
             client_user_id=body.client_user_id,
         )

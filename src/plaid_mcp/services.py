@@ -52,8 +52,9 @@ def create_link_session(
         "countries": session.get("countries"),
         "env": session.get("env"),
         "next_step": (
-            "Open hosted_link_url in a browser. When finished, call list_items, "
-            "then transactions_sync with the new item_id."
+            "Open hosted_link_url in a browser. When the user finishes, suggest prompts "
+            "like “What banks do I have linked?” or “Show my recent transactions” "
+            "(wait a few seconds if the new link is not visible yet)."
         ),
     }
     if session.get("canada_note"):
@@ -148,6 +149,48 @@ def transactions_sync(
     result = plaid_client.transactions_sync_all(
         token,
         cursor=cursor,
+        count=min(max(count, 1), 500),
+    )
+    if item_id:
+        result["item_id"] = item_id
+    return result
+
+
+def investments_holdings_get(
+    *,
+    item_id: str | None = None,
+    access_token: str | None = None,
+    client_user_id: str | None = None,
+) -> dict[str, Any]:
+    token = store.get_access_token(
+        item_id=item_id,
+        access_token=access_token,
+        client_user_id=client_user_id,
+    )
+    result = plaid_client.investments_holdings_get(token)
+    if item_id:
+        result["item_id"] = item_id
+    return result
+
+
+def investments_transactions_get(
+    *,
+    item_id: str | None = None,
+    access_token: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    count: int = 500,
+    client_user_id: str | None = None,
+) -> dict[str, Any]:
+    token = store.get_access_token(
+        item_id=item_id,
+        access_token=access_token,
+        client_user_id=client_user_id,
+    )
+    result = plaid_client.investments_transactions_get(
+        token,
+        start_date=start_date,
+        end_date=end_date,
         count=min(max(count, 1), 500),
     )
     if item_id:
