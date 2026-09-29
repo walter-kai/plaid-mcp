@@ -25,6 +25,8 @@ from plaid.model.link_token_create_hosted_link import LinkTokenCreateHostedLink
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.products import Products
+from plaid.model.transactions_get_request import TransactionsGetRequest
+from plaid.model.transactions_get_request_options import TransactionsGetRequestOptions
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
 
 from plaid_mcp.config import Settings, get_settings
@@ -298,6 +300,60 @@ def transactions_sync_all(
             "modified": len(modified),
             "removed": len(removed),
         },
+    }
+
+
+def transactions_get(
+    access_token: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    count: int = 500,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """Fetch transactions between dates straight from Plaid (no local storage).
+
+    Dates are ISO ``YYYY-MM-DD``; defaults to the last 90 days. Paginates via
+    offset until all matching transactions are collected.
+    """
+    settings = settings or get_settings()
+    client = get_client(settings)
+
+    end = date.fromisoformat(end_date) if end_date else date.today()
+    start = date.fromisoformat(start_date) if start_date else end - timedelta(days=90)
+    page = min(max(count, 1), 500)
+
+    transactions: list[dict[str, Any]] = []
+    accounts: list[dict[str, Any]] = []
+    total = 0
+    offset = 0
+
+    while True:
+        response = client.transactions_get(
+            TransactionsGetRequest(
+                access_token=access_token,
+                start_date=start,
+                end_date=end,
+                options=TransactionsGetRequestOptions(count=page, offset=offset),
+            )
+        )
+        payload = _to_dict(response)
+        batch = payload.get("transactions") or []
+        transactions.extend(batch)
+        if not accounts:
+            accounts = payload.get("accounts") or []
+        total = int(payload.get("total_transactions") or len(transactions))
+        offset += len(batch)
+        if not batch or offset >= total or offset >= 5000:
+            break
+
+    return {
+        "transactions": transactions,
+        "accounts": accounts,
+        "total_transactions": total,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "count": len(transactions),
     }
 
 

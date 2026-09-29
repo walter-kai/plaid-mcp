@@ -156,6 +156,31 @@ def transactions_sync(
     return result
 
 
+def transactions_get(
+    *,
+    item_id: str | None = None,
+    access_token: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    count: int = 500,
+    client_user_id: str | None = None,
+) -> dict[str, Any]:
+    token = store.get_access_token(
+        item_id=item_id,
+        access_token=access_token,
+        client_user_id=client_user_id,
+    )
+    result = plaid_client.transactions_get(
+        token,
+        start_date=start_date,
+        end_date=end_date,
+        count=min(max(count, 1), 500),
+    )
+    if item_id:
+        result["item_id"] = item_id
+    return result
+
+
 def investments_holdings_get(
     *,
     item_id: str | None = None,
@@ -221,3 +246,35 @@ def remove_item(
         "client_user_id": record.get("client_user_id"),
         "plaid": plaid_result,
     }
+
+
+def dedupe_institution_items(
+    *,
+    client_user_id: str | None,
+    institution_id: str | None,
+    keep_item_id: str,
+) -> list[dict[str, Any]]:
+    """Drop other Items for the same user + institution, keeping ``keep_item_id``.
+
+    A "Reconfigure" re-link creates a brand-new Item for an institution the user
+    already linked. Without this, the linked-institutions list accumulates a
+    duplicate row each time. We revoke and delete the stale Items so re-linking
+    updates the connection in place instead of piling up.
+
+    Scoped strictly to one owner: skipped when the owner or institution is
+    unknown, so we never touch another user's Items.
+    """
+    if not client_user_id or not institution_id:
+        return []
+    removed: list[dict[str, Any]] = []
+    for row in store.list_items(client_user_id=client_user_id):
+        other_id = row.get("item_id")
+        if not isinstance(other_id, str) or not other_id or other_id == keep_item_id:
+            continue
+        if row.get("institution_id") != institution_id:
+            continue
+        try:
+            removed.append(remove_item(item_id=other_id, client_user_id=client_user_id))
+        except Exception:  # noqa: BLE001 — best-effort cleanup; never fail the link
+            continue
+    return removed

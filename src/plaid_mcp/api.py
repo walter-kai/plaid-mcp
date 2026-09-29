@@ -31,6 +31,12 @@ class TransactionsSyncBody(ItemRefBody):
     count: int = Field(default=500, ge=1, le=500)
 
 
+class TransactionsGetBody(ItemRefBody):
+    start_date: str | None = None
+    end_date: str | None = None
+    count: int = Field(default=500, ge=1, le=500)
+
+
 class InvestmentsTransactionsBody(ItemRefBody):
     start_date: str | None = None
     end_date: str | None = None
@@ -107,6 +113,26 @@ def transactions_sync(body: TransactionsSyncBody) -> dict[str, Any]:
             item_id=body.item_id,
             access_token=body.access_token,
             cursor=body.cursor,
+            count=body.count,
+            client_user_id=body.client_user_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/transactions/get")
+def transactions_get(body: TransactionsGetBody) -> dict[str, Any]:
+    """Fetch transactions between dates straight from Plaid (no local storage)."""
+    try:
+        return services.transactions_get(
+            item_id=body.item_id,
+            access_token=body.access_token,
+            start_date=body.start_date,
+            end_date=body.end_date,
             count=body.count,
             client_user_id=body.client_user_id,
         )
